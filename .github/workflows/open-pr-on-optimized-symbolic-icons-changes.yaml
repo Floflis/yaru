@@ -7,13 +7,17 @@ on:
   schedule:
     - cron: '8 0 * * *'
 
+permissions:
+  pull-requests: write
+  contents: write
+
 jobs:
   refresh-upstream:
     name: Check for optimized SVG icons changes
     runs-on: ubuntu-latest
     steps:
       - name: Checkout Yaru code
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
 
       - name: Setup common variables
         id: env
@@ -61,7 +65,7 @@ jobs:
 
       - name: Create or update Pull Request
         if: steps.check_optimization_changes.outputs.modified == 'true'
-        uses: peter-evans/create-pull-request@v4
+        uses: peter-evans/create-pull-request@v5
         with:
           commit-message: "icons: Optimize symbolic icons"
           title: Auto optimized symbolic icons updates

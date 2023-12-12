@@ -16,6 +16,9 @@ foreach accent: enabled_accent_colors
 endforeach
 
 fullcolor_path = 'src' / 'fullcolor'
+xvfb_run = find_program('xvfb-run', required: false)
+dbus_run_session = find_program('dbus-run-session', required: false)
+inkscape = find_program('inkscape', required: false)
 render_bitmaps = find_program(fullcolor_path / 'render-bitmaps.py', required: true)
 generate_symlinks = find_program('src' / 'symlinks' / 'generate-symlinks.sh', required: true)
 generate_index_theme = find_program('src' / 'generate-index-theme.py', required: true)
@@ -32,6 +35,15 @@ symlink_targets = []
 render_by_icon_targets = {}
 cleanup_rendered_icons_targets = []
 cleanup_rendered_icons_accented_targets = []
+cleanup_symlinks_targets = []
+cleanup_symlinks_accented_targets = []
+
+if not inkscape.found()
+  warning('Inkscape not found, bitmap rendering not supported')
+endif
+
+render_wrappers = xvfb_run.found() ? [xvfb_run, '-a', '--'] : []
+render_wrappers += dbus_run_session.found() ? [dbus_run_session, '--'] : []
 
 foreach flavour: icon_flavors
   is_dark = flavour == 'dark'
@@ -102,10 +114,15 @@ foreach flavour: icon_flavors
       svg = source_svgs[i]
       basename = fs.stem(fs.name(svg))
       category = fs.name(fs.parent(svg))
-      render_bitmap_target = custom_target('render-icon-' + '-'.join([category, basename, flavour]),
+      render_bitmap_target = custom_target(
+        'render-icon-' + '-'.join([category, basename, flavour]),
         input: svg,
         output: 'rendered-@0@-@BASENAME@-@1@.svg'.format(category, flavour),
+        env: [
+          'NO_AT_BRIDGE=1',
+        ],
         command: [
+          render_wrappers,
           render_bitmaps,
           rendering_args,
           '--categories', category,
@@ -149,12 +166,32 @@ foreach flavour: icon_flavors
 
     cleanup_rendered_flavour = run_target('cleanup-rendered-' + flavour,
       command: [
-        'bash', '-c', 'rm -rfv "$0"/$1',
+        'bash', '-c',
+          ';'.join([
+            '[ ! -e "$0"/$1 ] && exit 0',
+            'find "$0"/$1 -name "*.png" -print -delete',
+            is_accent ? 'find "$0"/$1 -name "*.svg" -print -delete' : 'true',
+            'find "$0"/$1 -type d -empty -print -delete'
+          ]),
         meson.project_source_root() / meson.current_source_dir() / icon_dir,
         '[0-9]*x[0-9]*',
       ]
     )
     cleanup_rendered_icons_targets += cleanup_rendered_flavour
+
+    cleanup_symlinks_flavour = run_target('cleanup-symlinks-' + flavour,
+      command: [
+        'bash', '-c',
+          ';'.join([
+            '[ ! -e "$0"/$1 ] && exit 0',
+            'find "$0"/$1 -type l -print -delete',
+            'find "$0"/$1 -type d -empty -print -delete',
+          ]),
+        meson.project_source_root() / meson.current_source_dir() / icon_dir,
+        '[0-9]*x[0-9]*',
+      ]
+    )
+    cleanup_symlinks_targets += cleanup_symlinks_flavour
 
     if render_flavour_targets.length() > 0
       alias_target('render-icons-' + flavour, render_flavour_targets)
@@ -166,6 +203,7 @@ foreach flavour: icon_flavors
       render_accented_targets += render_flavour_targets
       render_and_symlink_accented_targets += render_and_symlink_flavour
       cleanup_rendered_icons_accented_targets += cleanup_rendered_flavour
+      cleanup_symlinks_accented_targets += cleanup_symlinks_flavour
 
       if not fs.is_dir(icon_dir)
         warning('@0@ does not exists, ensure you generated it with `ninja -C @1@ render-icons-@2@,`'.format(
@@ -225,12 +263,32 @@ foreach flavour: icon_flavors
       endif
 
       if local_links.length() > 0
-        links_targets = run_command(
+        relative_to = meson.current_source_dir() / icon_dir
+        links_paths_getter = run_command(
           'realpath', '-e',
-          '--relative-to=' + meson.current_source_dir() / icon_dir,
+          '--relative-to=' + relative_to,
           local_links,
-          check: true,
-        ).stdout().strip().split('\n')
+          check: false,
+        )
+
+        if links_paths_getter.returncode() != 0
+          failed_links = []
+          foreach link: local_links
+            if run_command(
+              'realpath', '-e',
+              '--relative-to=' + relative_to,
+              link,
+              check: false,
+            ).returncode() != 0
+              failed_links += link
+            endif
+          endforeach
+
+          error ('Symbolic links are pointing to invalid paths:\n  ' +
+            '\n  '.join(failed_links))
+        endif
+
+        links_targets = links_paths_getter.stdout().strip().split('\n')
         assert(local_links.length() == links_targets.length())
       endif
 
@@ -409,6 +467,7 @@ endforeach
 alias_target('render-icons', render_targets)
 alias_target('render+symlink-icons', render_and_symlink_targets)
 alias_target('symlink-icons', symlink_targets)
+alias_target('cleanup-symlink-icons', cleanup_symlinks_targets)
 alias_target('cleanup-rendered-icons', cleanup_rendered_icons_targets)
 
 if render_accented_targets.length() > 0
@@ -416,6 +475,7 @@ if render_accented_targets.length() > 0
   alias_target('render-icons-accented', render_accented_targets)
   alias_target('render+symlink-icons-accented', render_and_symlink_accented_targets)
   alias_target('cleanup-rendered-icons-accented', cleanup_rendered_icons_accented_targets)
+  alias_target('cleanup-symlinks-accented', cleanup_symlinks_accented_targets)
 endif
 
 foreach icon, targets: render_by_icon_targets
